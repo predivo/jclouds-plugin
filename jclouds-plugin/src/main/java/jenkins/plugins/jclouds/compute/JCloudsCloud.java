@@ -333,7 +333,6 @@ public class JCloudsCloud extends Cloud {
 
     private void ensureLaunched(JCloudsSlave jcloudsSlave) throws InterruptedException, ExecutionException {
         jcloudsSlave.waitForPhoneHome(null);
-        Integer launchTimeoutSec = 5 * 60;
         Computer computer = jcloudsSlave.toComputer();
         long startMoment = System.currentTimeMillis();
         while (null != computer && computer.isOffline()) {
@@ -342,13 +341,15 @@ public class JCloudsCloud extends Cloud {
                 computer.connect(false).get();
                 Thread.sleep(5000l);
             } catch (InterruptedException e) {
+		Thread.sleep(10000L); //retry but not too fast..
                 LOGGER.warning(String.format("Error while launching slave: %s", e));
             } catch (ExecutionException e) {
+		Thread.sleep(10000L); //retry but not too fast..
                 LOGGER.warning(String.format("Error while launching slave: %s", e));
             }
 
-            if ((System.currentTimeMillis() - startMoment) > 1000l * launchTimeoutSec) {
-                String message = String.format("Failed to connect to slave within timeout (%d s).", launchTimeoutSec);
+	    if ((System.currentTimeMillis() - startMoment) >  startTimeout) {		
+		String message = String.format("Failed to connect to slave within timeout (%d millisec.).", startTimeout);
                 LOGGER.warning(message);
                 throw new ExecutionException(new Throwable(message));
             }
@@ -382,6 +383,13 @@ public class JCloudsCloud extends Cloud {
         final StreamTaskListener listener = new StreamTaskListener(sw);
         JCloudsSlave node = t.provisionSlave(listener);
         Jenkins.getActiveInstance().addNode(node);
+	Jenkins.getInstance().addNode(node);
+	try {
+	    ensureLaunched(node);
+	}
+	catch (Exception ex){
+	    LOGGER.severe("Cannot provision From Template: " + ex.getMessage());  
+	}
         return node;
     }
 

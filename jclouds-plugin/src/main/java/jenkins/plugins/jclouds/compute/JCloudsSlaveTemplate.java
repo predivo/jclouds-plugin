@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashSet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -43,6 +44,7 @@ import hudson.util.ListBoxModel;
 import jenkins.model.Jenkins;
 
 import org.apache.commons.lang.StringUtils;
+import org.jclouds.ec2.compute.options.EC2TemplateOptions;
 import org.jclouds.cloudstack.compute.options.CloudStackTemplateOptions;
 import org.jclouds.compute.ComputeService;
 import org.jclouds.compute.RunNodesException;
@@ -52,6 +54,7 @@ import org.jclouds.compute.domain.NodeMetadata;
 import org.jclouds.compute.domain.OsFamily;
 import org.jclouds.compute.domain.Template;
 import org.jclouds.compute.domain.TemplateBuilder;
+import org.jclouds.compute.domain.internal.NodeMetadataImpl;
 import org.jclouds.compute.options.TemplateOptions;
 import org.jclouds.domain.Location;
 import org.jclouds.domain.LoginCredentials;
@@ -301,10 +304,11 @@ public class JCloudsSlaveTemplate implements Describable<JCloudsSlaveTemplate>, 
     public NodeMetadata get() {
         boolean brokenImageCacheHasThrown = false;
         NodeMetadata nodeMetadata = null;
-
+	NodeMetadataImpl nodeMetadataRen = null;
         do {
             LOGGER.info("Provisioning new jclouds node");
-            ImmutableMap<String, String> userMetadata = ImmutableMap.of("Name", name);
+            ImmutableMap<String, String> userMetadata = ImmutableMap.of("Name", name, "JenkinsURL", Jenkins.getInstance().getRootUrl());
+
             TemplateBuilder templateBuilder = getCloud().getCompute().templateBuilder();
             if (!Strings.isNullOrEmpty(imageId)) {
                 LOGGER.info("Setting image id to " + imageId);
@@ -391,6 +395,10 @@ public class JCloudsSlaveTemplate implements Describable<JCloudsSlaveTemplate>, 
                 } else if (options instanceof CloudStackTemplateOptions) {
                     LOGGER.info("Setting CloudStack keyPairName to: " + keyPairName);
                     options.as(CloudStackTemplateOptions.class).keyPair(keyPairName);
+                } else if (options instanceof EC2TemplateOptions) {
+                    LOGGER.info("Setting EC2 keyPairName to: " + keyPairName);
+                    options.as(EC2TemplateOptions.class).keyPair(keyPairName).
+			overrideLoginPrivateKey(getCloud().getGlobalPrivateKey());
                 }
             }
 
@@ -450,7 +458,13 @@ public class JCloudsSlaveTemplate implements Describable<JCloudsSlaveTemplate>, 
                         Statements.exec("chown " + getJenkinsUser() + " " + getFsRoot()));
                 initStatement = newStatementList(adminAccess, jenkinsDirStatement, Statements.exec(this.initScript));
             }
-            options.inboundPorts(22).userMetadata(userMetadata);
+
+	    //add tags to template options:
+	    HashSet<String> tags = new HashSet(options.getTags());
+	    tags.add("Jenkins Slave");
+
+            options.inboundPorts(22).userMetadata(userMetadata).tags(tags);
+
 
             if (null != initStatement) {
                 options.runScript(initStatement);
@@ -469,7 +483,21 @@ public class JCloudsSlaveTemplate implements Describable<JCloudsSlaveTemplate>, 
 
             try {
                 nodeMetadata = getOnlyElement(getCloud().getCompute().createNodesInGroup(name, 1, template));
+		nodeMetadataRen = (NodeMetadataImpl)nodeMetadata; 
                 brokenImageCacheHasThrown = false;
+		//duplicate nodeMetadata while renaming node with instance id (works for E2C)
+		if (options instanceof EC2TemplateOptions) {
+		    String newName = name + " (" + nodeMetadata.getProviderId()  + ")";
+		    nodeMetadataRen = new NodeMetadataImpl(nodeMetadata.getProviderId(), newName, nodeMetadata.getId(), 
+							   nodeMetadata.getLocation(), nodeMetadata.getUri(),
+							   nodeMetadata.getUserMetadata(), nodeMetadata.getTags(),
+							   nodeMetadata.getGroup(), nodeMetadata.getHardware(),
+							   nodeMetadata.getImageId(), nodeMetadata.getOperatingSystem(), 
+							   nodeMetadata.getStatus(), nodeMetadata.getBackendStatus(),
+							   nodeMetadata.getLoginPort(), nodeMetadata.getPublicAddresses(),
+							   nodeMetadata.getPrivateAddresses(),
+							   nodeMetadata.getCredentials(), nodeMetadata.getHostname());
+		}
             } catch (RunNodesException e) {
                 boolean throwNow = true;
                 if (!(Strings.isNullOrEmpty(imageNameRegex) || brokenImageCacheHasThrown)) {
@@ -492,7 +520,7 @@ public class JCloudsSlaveTemplate implements Describable<JCloudsSlaveTemplate>, 
         } while (brokenImageCacheHasThrown);
 
         // Check if nodeMetadata is null and throw
-        return nodeMetadata;
+        return nodeMetadataRen;
     }
 
     private void destroyBadNodes(RunNodesException e) {
